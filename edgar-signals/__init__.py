@@ -1,0 +1,1 @@
+# EDGAR signals MCP server
