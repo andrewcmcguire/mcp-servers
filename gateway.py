@@ -2,18 +2,17 @@
 MCP Gateway — single public entry point for all 6 MCP servers.
 
 Provides:
-  POST /mcp/request-key  — request an API key (stores in Postgres, notifies Andrew)
-  GET  /mcp/servers       — list available servers with connection info
-  GET  /mcp/health        — aggregate health check
-  GET  /                  — gateway info
+  POST /mcp/request-key        — request an API key
+  GET  /mcp/servers             — list available servers with connection info
+  GET  /mcp/health              — aggregate health check
+  GET  /                        — gateway info
+  /s/{server}/mcp               — proxy to individual MCP server (POST/GET/DELETE)
 
-Individual servers run on their own ports (8100-8105).
-The gateway runs on port 8099 and proxies nothing — it's the directory
-and key-request layer. Clients connect directly to individual servers.
+One Cloudflare tunnel → one gateway → six MCP servers.
+Clients connect via /s/{server-name}/mcp through the gateway URL.
 
 Usage:
     python gateway.py
-    # or: python -m mcp_servers.gateway
 """
 
 import json
@@ -263,7 +262,74 @@ async def root(request: Request):
     })
 
 
-app = Starlette(
+async def _proxy_to_server(scope, receive, send):
+    """Proxy /s/{server-name}/mcp to the appropriate backend MCP server."""
+    import httpx
+
+    path = scope.get("path", "")
+    parts = path.split("/")
+    if len(parts) < 4 or parts[1] != "s" or parts[3] != "mcp":
+        body = json.dumps({"error": f"Invalid proxy path: {path}. Use /s/{{server-name}}/mcp"}).encode()
+        await send({"type": "http.response.start", "status": 404,
+                     "headers": [[b"content-type", b"application/json"]]})
+        await send({"type": "http.response.body", "body": body})
+        return
+
+    server_name = parts[2]
+    if server_name not in SERVERS:
+        body = json.dumps({"error": f"Unknown server: {server_name}", "available": list(SERVERS.keys())}).encode()
+        await send({"type": "http.response.start", "status": 404,
+                     "headers": [[b"content-type", b"application/json"]]})
+        await send({"type": "http.response.body", "body": body})
+        return
+
+    backend_port = SERVERS[server_name]["port"]
+    backend_url = f"http://localhost:{backend_port}/mcp"
+    method = scope.get("method", "GET")
+
+    request_headers = {}
+    for key, value in scope.get("headers", []):
+        header_name = key.decode().lower()
+        if header_name in ("authorization", "content-type", "accept", "mcp-session-id"):
+            request_headers[header_name] = value.decode()
+
+    request_body = b""
+    if method in ("POST", "PUT", "PATCH"):
+        while True:
+            message = await receive()
+            request_body += message.get("body", b"")
+            if not message.get("more_body", False):
+                break
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            if method == "GET":
+                resp = await client.get(backend_url, headers=request_headers)
+            elif method == "POST":
+                resp = await client.post(backend_url, headers=request_headers, content=request_body)
+            elif method == "DELETE":
+                resp = await client.delete(backend_url, headers=request_headers)
+            else:
+                resp = await client.request(method, backend_url, headers=request_headers, content=request_body)
+
+        response_headers = []
+        for k, v in resp.headers.items():
+            if k.lower() not in ("transfer-encoding", "content-encoding"):
+                response_headers.append([k.encode(), v.encode()])
+
+        await send({"type": "http.response.start", "status": resp.status_code,
+                     "headers": response_headers})
+        await send({"type": "http.response.body", "body": resp.content})
+
+    except Exception as e:
+        logger.exception(f"Proxy error for {server_name}")
+        body = json.dumps({"error": f"Backend {server_name} unavailable: {str(e)}"}).encode()
+        await send({"type": "http.response.start", "status": 502,
+                     "headers": [[b"content-type", b"application/json"]]})
+        await send({"type": "http.response.body", "body": body})
+
+
+starlette_app = Starlette(
     debug=False,
     routes=[
         Route("/", root),
@@ -273,12 +339,21 @@ app = Starlette(
     ],
 )
 
-app.add_middleware(
+starlette_app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+async def app(scope, receive, send):
+    path = scope.get("path", "")
+    if scope["type"] == "http" and path.startswith("/s/"):
+        await _proxy_to_server(scope, receive, send)
+    else:
+        await starlette_app(scope, receive, send)
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
