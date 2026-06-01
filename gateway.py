@@ -1,14 +1,16 @@
 """
-MCP Gateway — single public entry point for all 6 MCP servers.
+MCP Gateway — single public entry point for all 7 MCP servers.
 
 Provides:
-  POST /mcp/request-key        — request an API key
+  POST /mcp/request-key        — request an API key (goes to pending, notifies Slack)
+  POST /mcp/approve-key        — approve a pending key request (admin only)
+  POST /mcp/deny-key           — deny a pending key request (admin only)
   GET  /mcp/servers             — list available servers with connection info
   GET  /mcp/health              — aggregate health check
   GET  /                        — gateway info
   /s/{server}/mcp               — proxy to individual MCP server (POST/GET/DELETE)
 
-One Cloudflare tunnel → one gateway → six MCP servers.
+One Cloudflare tunnel → one gateway → seven MCP servers.
 Clients connect via /s/{server-name}/mcp through the gateway URL.
 
 Usage:
@@ -26,6 +28,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(__file__))
 
 import asyncpg
+import httpx
 import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
@@ -33,13 +36,18 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from shared.config import get_postgres_config
+from shared.config import get_config, get_postgres_config
 
 PORT = 8099
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mcp-gateway")
 
 _pool = None
+
+_gw_config = get_config().get("mcp_gateway", {})
+SLACK_WEBHOOK = _gw_config.get("slack_webhook", "")
+ADMIN_SECRET = _gw_config.get("admin_secret", "")
+GATEWAY_URL = "https://mcp.andrewcmcguire.com"
 
 SERVERS = {
     "edgar-signals": {
@@ -118,7 +126,7 @@ async def _get_pool():
                     created_at TIMESTAMPTZ DEFAULT now(),
                     daily_count INT DEFAULT 0,
                     last_used DATE DEFAULT CURRENT_DATE,
-                    approved BOOLEAN DEFAULT TRUE
+                    approved BOOLEAN DEFAULT FALSE
                 )
             """)
             await conn.execute("""
@@ -130,7 +138,7 @@ async def _get_pool():
                     referral TEXT,
                     api_key TEXT,
                     created_at TIMESTAMPTZ DEFAULT now(),
-                    status TEXT DEFAULT 'approved'
+                    status TEXT DEFAULT 'pending'
                 )
             """)
     return _pool
@@ -138,6 +146,70 @@ async def _get_pool():
 
 def _generate_key():
     return f"mcp_{secrets.token_urlsafe(24)}"
+
+
+async def _send_slack_notification(name: str, email: str, use_case: str, referral: str, api_key: str, request_id: int):
+    if not SLACK_WEBHOOK:
+        logger.warning("No Slack webhook configured, skipping notification")
+        return
+
+    approve_url = f"{GATEWAY_URL}/mcp/approve-key?key={api_key}&secret={ADMIN_SECRET}"
+    deny_url = f"{GATEWAY_URL}/mcp/deny-key?key={api_key}&secret={ADMIN_SECRET}"
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "New MCP Key Request"}
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Name:*\n{name}"},
+                {"type": "mrkdwn", "text": f"*Email:*\n{email}"},
+            ]
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Use Case:*\n{use_case or '(not provided)'}"},
+                {"type": "mrkdwn", "text": f"*Referral:*\n{referral or '(not provided)'}"},
+            ]
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Key:* `{api_key}`\n*Request ID:* {request_id}"}
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Approve"},
+                    "style": "primary",
+                    "url": approve_url,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Deny"},
+                    "style": "danger",
+                    "url": deny_url,
+                },
+            ]
+        },
+    ]
+
+    payload = {
+        "text": f"New MCP key request from {name} <{email}>",
+        "blocks": blocks,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(SLACK_WEBHOOK, json=payload)
+            if resp.status_code != 200:
+                logger.error(f"Slack notification failed: {resp.status_code} {resp.text}")
+    except Exception:
+        logger.exception("Failed to send Slack notification")
 
 
 async def request_key(request: Request):
@@ -160,16 +232,28 @@ async def request_key(request: Request):
     pool = await _get_pool()
     async with pool.acquire() as conn:
         existing = await conn.fetchrow(
-            "SELECT api_key FROM public.mcp_key_requests WHERE email = $1 AND status = 'approved'",
+            "SELECT api_key, status FROM public.mcp_key_requests WHERE email = $1 ORDER BY created_at DESC LIMIT 1",
             email,
         )
         if existing:
-            return JSONResponse({
-                "api_key": existing["api_key"],
-                "message": "You already have a key. Here it is again.",
-                "rate_limit": "100 requests/day",
-                "servers": {k: f"http://mcp.andrewcmcguire.com:{v['port']}/mcp" for k, v in SERVERS.items()},
-            })
+            if existing["status"] == "approved":
+                return JSONResponse({
+                    "api_key": existing["api_key"],
+                    "status": "approved",
+                    "message": "You already have a key. Here it is again.",
+                    "rate_limit": "100 requests/day",
+                    "connect": _connect_info(existing["api_key"]),
+                })
+            elif existing["status"] == "pending":
+                return JSONResponse({
+                    "status": "pending",
+                    "message": "Your request is pending review. You'll receive your key via email once approved.",
+                })
+            elif existing["status"] == "denied":
+                return JSONResponse({
+                    "status": "denied",
+                    "message": "Your request was not approved. Email andrew@andrewcmcguire.com for questions.",
+                }, status_code=403)
 
         key_count = await conn.fetchval("SELECT COUNT(*) FROM public.mcp_api_keys")
         if key_count >= 50:
@@ -180,37 +264,135 @@ async def request_key(request: Request):
         api_key = _generate_key()
 
         await conn.execute(
-            """INSERT INTO public.mcp_api_keys (api_key, owner, email, use_case, referral)
-               VALUES ($1, $2, $3, $4, $5)""",
+            """INSERT INTO public.mcp_api_keys (api_key, owner, email, use_case, referral, approved)
+               VALUES ($1, $2, $3, $4, $5, FALSE)""",
             api_key, name, email, use_case, referral,
         )
-        await conn.execute(
+        request_id = await conn.fetchval(
             """INSERT INTO public.mcp_key_requests (name, email, use_case, referral, api_key, status)
-               VALUES ($1, $2, $3, $4, $5, 'approved')""",
+               VALUES ($1, $2, $3, $4, $5, 'pending') RETURNING id""",
             name, email, use_case, referral, api_key,
         )
 
-    logger.info(f"New API key issued to {name} <{email}>")
+    logger.info(f"New API key request from {name} <{email}> — pending approval")
+
+    await _send_slack_notification(name, email, use_case, referral, api_key, request_id)
 
     return JSONResponse({
-        "api_key": api_key,
-        "message": f"Welcome, {name}. Your key is ready.",
-        "rate_limit": "100 requests/day",
-        "connect": {
-            "transport": "Streamable HTTP",
-            "auth": f"Bearer {api_key}",
-            "servers": {k: {"url": f"/mcp", "port": v["port"]} for k, v in SERVERS.items()},
-        },
-        "quick_start": {
-            "claude_desktop": "Add to claude_desktop_config.json under mcpServers",
-            "cursor": "Add to .cursor/mcp.json",
-            "python": "from mcp.client.streamable_http import streamablehttp_client",
-        },
+        "status": "pending",
+        "message": f"Thanks, {name}. Your request is being reviewed. You'll receive your API key via email once approved. Most keys are approved same day.",
     })
 
 
+def _connect_info(api_key: str) -> dict:
+    return {
+        "transport": "Streamable HTTP",
+        "auth": f"Bearer {api_key}",
+        "servers": {k: {"url": f"{GATEWAY_URL}/s/{k}/mcp"} for k in SERVERS},
+        "quick_start": {
+            "claude_code": f'claude mcp add edgar-signals -s user --transport http --url "{GATEWAY_URL}/s/edgar-signals/mcp" --header "Authorization: Bearer {api_key}"',
+            "claude_desktop": "Add to claude_desktop_config.json under mcpServers",
+            "cursor": "Add to .cursor/mcp.json",
+        },
+    }
+
+
+async def approve_key(request: Request):
+    api_key = request.query_params.get("key", "")
+    secret = request.query_params.get("secret", "")
+
+    if not secret or secret != ADMIN_SECRET:
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    if not api_key:
+        return JSONResponse({"error": "Missing key parameter"}, status_code=400)
+
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, name, email, status FROM public.mcp_key_requests WHERE api_key = $1",
+            api_key,
+        )
+        if not row:
+            return JSONResponse({"error": "Key not found"}, status_code=404)
+
+        if row["status"] == "approved":
+            return JSONResponse({"message": "Already approved", "api_key": api_key})
+
+        await conn.execute(
+            "UPDATE public.mcp_key_requests SET status = 'approved' WHERE api_key = $1",
+            api_key,
+        )
+        await conn.execute(
+            "UPDATE public.mcp_api_keys SET approved = TRUE WHERE api_key = $1",
+            api_key,
+        )
+
+    name = row["name"]
+    email = row["email"]
+    logger.info(f"Approved API key for {name} <{email}>")
+
+    if SLACK_WEBHOOK:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(SLACK_WEBHOOK, json={
+                    "text": f"Approved MCP key for {name} <{email}> — `{api_key}`",
+                })
+        except Exception:
+            pass
+
+    return JSONResponse({
+        "message": f"Approved. Key for {name} <{email}> is now active.",
+        "api_key": api_key,
+        "connect": _connect_info(api_key),
+    })
+
+
+async def deny_key(request: Request):
+    api_key = request.query_params.get("key", "")
+    secret = request.query_params.get("secret", "")
+
+    if not secret or secret != ADMIN_SECRET:
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    if not api_key:
+        return JSONResponse({"error": "Missing key parameter"}, status_code=400)
+
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, name, email FROM public.mcp_key_requests WHERE api_key = $1",
+            api_key,
+        )
+        if not row:
+            return JSONResponse({"error": "Key not found"}, status_code=404)
+
+        await conn.execute(
+            "UPDATE public.mcp_key_requests SET status = 'denied' WHERE api_key = $1",
+            api_key,
+        )
+        await conn.execute(
+            "DELETE FROM public.mcp_api_keys WHERE api_key = $1",
+            api_key,
+        )
+
+    name = row["name"]
+    email = row["email"]
+    logger.info(f"Denied API key request from {name} <{email}>")
+
+    if SLACK_WEBHOOK:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(SLACK_WEBHOOK, json={
+                    "text": f"Denied MCP key request from {name} <{email}>",
+                })
+        except Exception:
+            pass
+
+    return JSONResponse({"message": f"Denied. Key request from {name} <{email}> rejected."})
+
+
 async def list_servers(request: Request):
-    host = request.headers.get("host", "localhost")
     result = {}
     for name, info in SERVERS.items():
         result[name] = {
@@ -218,22 +400,20 @@ async def list_servers(request: Request):
             "tools": info["tools"],
             "data_points": info["data_points"],
             "example_query": info["example_query"],
-            "endpoint": f"http://{host.split(':')[0]}:{info['port']}/mcp",
+            "endpoint": f"{GATEWAY_URL}/s/{name}/mcp",
             "transport": "streamable-http",
-            "health": f"http://{host.split(':')[0]}:{info['port']}/health",
         }
     return JSONResponse({
         "servers": result,
         "total_servers": len(result),
         "total_tools": sum(len(s["tools"]) for s in SERVERS.values()),
         "auth": "Bearer <your_api_key>",
-        "request_key": f"POST http://{host}/mcp/request-key",
+        "request_key": f"POST {GATEWAY_URL}/mcp/request-key",
         "rate_limit": "100 requests/day per key",
     })
 
 
 async def health(request: Request):
-    import httpx
     results = {}
     async with httpx.AsyncClient(timeout=3.0) as client:
         for name, info in SERVERS.items():
@@ -253,15 +433,14 @@ async def health(request: Request):
 
 
 async def root(request: Request):
-    host = request.headers.get("host", "localhost")
     return JSONResponse({
         "service": "MCP Intelligence Gateway",
         "operator": "Andrew McGuire",
-        "description": "Six MCP servers querying a 1,470-source intelligence pipeline. SEC filings. AI lab releases. Earnings calls. Hiring signals. Government contracts. Infrastructure changes.",
+        "description": "Seven MCP servers querying a 1,470-source intelligence pipeline. SEC filings. AI lab releases. Earnings calls. Hiring signals. Government contracts. Infrastructure changes.",
         "endpoints": {
-            "servers": f"http://{host}/mcp/servers",
-            "request_key": f"POST http://{host}/mcp/request-key",
-            "health": f"http://{host}/mcp/health",
+            "servers": f"{GATEWAY_URL}/mcp/servers",
+            "request_key": f"POST {GATEWAY_URL}/mcp/request-key",
+            "health": f"{GATEWAY_URL}/mcp/health",
         },
         "website": "https://andrewcmcguire.com/mcp",
         "transport": "streamable-http",
@@ -271,8 +450,6 @@ async def root(request: Request):
 
 async def _proxy_to_server(scope, receive, send):
     """Proxy /s/{server-name}/mcp to the appropriate backend MCP server."""
-    import httpx
-
     path = scope.get("path", "")
     parts = path.split("/")
     if len(parts) < 4 or parts[1] != "s" or parts[3] != "mcp":
@@ -341,6 +518,8 @@ starlette_app = Starlette(
     routes=[
         Route("/", root),
         Route("/mcp/request-key", request_key, methods=["POST"]),
+        Route("/mcp/approve-key", approve_key, methods=["GET", "POST"]),
+        Route("/mcp/deny-key", deny_key, methods=["GET", "POST"]),
         Route("/mcp/servers", list_servers),
         Route("/mcp/health", health),
     ],

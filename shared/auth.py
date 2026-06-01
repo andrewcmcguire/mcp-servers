@@ -53,7 +53,7 @@ async def validate_bearer_token(api_key: str) -> Optional[str]:
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT daily_count, last_used FROM public.mcp_api_keys WHERE api_key = $1",
+            "SELECT daily_count, last_used, approved FROM public.mcp_api_keys WHERE api_key = $1",
             api_key,
         )
 
@@ -74,6 +74,9 @@ async def validate_bearer_token(api_key: str) -> Optional[str]:
                 )
                 return None
             return "Invalid API key"
+
+        if row.get("approved") is False:
+            return "API key pending approval. Check your email or contact andrew@andrewcmcguire.com"
 
         daily_count = row["daily_count"]
         last_used = row["last_used"]
