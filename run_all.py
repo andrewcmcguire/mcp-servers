@@ -39,6 +39,7 @@ SERVERS = {
     "govcon": {"module": "govcon.server", "port": 8103},
     "hiring-signals": {"module": "hiring-signals.server", "port": 8104},
     "infra-signals": {"module": "infra-signals.server", "port": 8105},
+    "live-calls": {"module": "live-calls.server", "port": 8106},
 }
 
 # Map module paths to their FastAPI app import strings for uvicorn
@@ -49,6 +50,7 @@ APP_PATHS = {
     "govcon": "govcon.server:app",
     "hiring-signals": "hiring-signals.server:app",
     "infra-signals": "infra-signals.server:app",
+    "live-calls": "live-calls.server:app",
 }
 
 
@@ -89,6 +91,9 @@ async def run_server(name: str, port: int, host: str):
     elif name == "infra-signals":
         from importlib import import_module
         mod = import_module("infra-signals.server", package=None)
+    elif name == "live-calls":
+        from importlib import import_module
+        mod = import_module("live-calls.server", package=None)
     else:
         logger.error(f"Unknown server: {name}")
         return

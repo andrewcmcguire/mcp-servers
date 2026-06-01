@@ -84,6 +84,13 @@ SERVERS = {
         "example_query": "NVIDIA GitHub releases this month",
         "data_points": "1K+",
     },
+    "live-calls": {
+        "port": 8106,
+        "description": "Live earnings call transcripts, NLP insights, deception scoring, real-time monitoring alerts",
+        "tools": ["get_call_insights", "get_transcripts", "get_deception_signals", "get_live_alerts", "get_upcoming_calls", "search_call_content", "get_call_monitor_status", "get_call_directory"],
+        "example_query": "Which CEOs showed high deception scores on their last earnings call?",
+        "data_points": "27K+",
+    },
 }
 
 
