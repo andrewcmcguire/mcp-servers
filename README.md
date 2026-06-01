@@ -276,13 +276,147 @@ Once connected, just ask in natural language. Here are real queries you can run:
 
 > "Give me the master call directory for all FAANG companies with transcripts"
 
-### Multi-Server Queries
+---
 
-> "Cross-reference: companies where insiders are selling AND the CEO showed high deception on their last earnings call"
+## Playbooks
 
-> "Find AI companies that are hiring aggressively, just filed Form D, and have no press coverage"
+These are recommended workflows that chain signals across multiple servers. Copy-paste any of these into Claude Code, Claude Desktop, or Cursor and they run end-to-end.
 
-> "Which companies had earnings beats of 10%+ AND are being bought by Congress members?"
+### 1. Stealth Startup Scanner
+
+Find companies raising money quietly — Form D filed, hiring aggressively, but zero press.
+
+```
+Step 1: Use edgar-signals to find Form D filings in the last 30 days
+Step 2: For each company, use hiring-signals to check if they're posting roles
+Step 3: Cross-reference — which ones are both raising AND hiring but have
+        no 8-K, no earnings, no analyst coverage?
+```
+
+**Prompt:**
+> "Search for Form D filings from the last 30 days. For any company that also has
+> new job postings on Greenhouse/Ashby/Lever, flag it. I want stealth-mode startups
+> that are raising money and building a team but haven't gone public with announcements."
+
+### 2. Earnings Deception Detector
+
+Find CEOs whose words don't match their numbers.
+
+```
+Step 1: Use live-calls to get deception signals above 0.5
+Step 2: Cross-reference with earnings-intel — did they beat or miss?
+Step 3: Check edgar-signals — are insiders selling after the call?
+Step 4: Flag: high deception + beat expectations + insider selling = red flag
+```
+
+**Prompt:**
+> "Get earnings calls from the last 90 days where the deception score was above 0.5.
+> For those companies, check if insiders filed Form 4 sells within 30 days of the call.
+> Also check if they beat or missed earnings estimates. I'm looking for companies where
+> the CEO sounded evasive AND insiders are dumping shares."
+
+### 3. AI Arms Race Tracker
+
+Weekly briefing on what every major AI lab shipped.
+
+```
+Step 1: Use ai-labs to get activity from the top 10 labs this week
+Step 2: Use infra-signals to check their GitHub releases and trending models
+Step 3: Use hiring-signals to see who's ramping headcount
+Step 4: Synthesize into a competitive landscape update
+```
+
+**Prompt:**
+> "Give me a weekly AI arms race briefing. Check what OpenAI, Anthropic, Google DeepMind,
+> Meta, Mistral, xAI, and DeepSeek shipped this week — model releases, papers, GitHub
+> activity, blog posts. Then check their hiring velocity. Who's accelerating and who's
+> slowing down? Format as a competitive intel brief."
+
+### 4. Congressional Front-Running Monitor
+
+What are Congress members buying — and do they know something?
+
+```
+Step 1: Use govcon to get congressional trades from the last 30 days
+Step 2: For each ticker traded, use earnings-intel to check upcoming earnings
+Step 3: Use edgar-signals to check for any unusual 8-K filings
+Step 4: Use govcon to check if those companies have active lobbying or
+        federal contracts
+```
+
+**Prompt:**
+> "Pull all congressional stock trades from the last 30 days. For each ticker,
+> cross-reference: are there upcoming earnings? Any 8-K material events filed?
+> Any active lobbying disclosures or federal contracts? I want to see if there's
+> a pattern between their trades and upcoming catalysts."
+
+### 5. Pre-Earnings Research Pack
+
+Everything you need before an earnings call.
+
+```
+Step 1: Use live-calls/get_upcoming_calls to find what's reporting this week
+Step 2: For each ticker, use live-calls/get_call_directory for history
+Step 3: Use earnings-intel for analyst revisions and prior earnings moves
+Step 4: Use edgar-signals for recent insider trades and 13F holdings
+Step 5: Use live-calls/get_call_insights for NLP from prior quarters
+```
+
+**Prompt:**
+> "Build me an earnings research pack for [TICKER]. Pull: the last 4 quarters of
+> earnings call insights (sentiment, deception, guidance direction), analyst revisions,
+> insider trading activity, institutional holdings changes, and the transcript from
+> their most recent call. Summarize the trend — is management getting more or less
+> confident? Are insiders buying or selling into strength?"
+
+### 6. Infrastructure Reconnaissance
+
+Spot product launches before they're announced.
+
+```
+Step 1: Use infra-signals/get_cert_transparency for new subdomains
+Step 2: Use ai-labs/get_github_activity for new repos
+Step 3: Use hiring-signals/detect_first_hire for new team functions
+Step 4: New subdomain + new repo + first hire in that function = launch signal
+```
+
+**Prompt:**
+> "Check certificate transparency for openai.com, anthropic.com, and google.com
+> in the last 30 days. Any new subdomains? Cross-reference with their GitHub —
+> any new repos that match? And check if they're hiring for new functions they
+> didn't have before. I'm looking for pre-launch infrastructure signals."
+
+### 7. Policy Risk Monitor
+
+Track regulatory risk to specific sectors or companies.
+
+```
+Step 1: Use govcon/get_federal_register for new rules affecting your sector
+Step 2: Use govcon/get_policy_markets for prediction market pricing
+Step 3: Use govcon/get_lobbying_activity to see who's spending to influence
+Step 4: Use live-calls/search_call_content for CEO commentary on regulation
+```
+
+**Prompt:**
+> "What's the regulatory risk picture for AI companies right now? Check the Federal
+> Register for AI-related rules, executive orders, and proposed regulations. What do
+> Kalshi and Polymarket say about AI regulation probability? Which companies are
+> lobbying hardest? And search recent earnings call transcripts for CEO mentions of
+> 'regulation', 'compliance', or 'executive order'."
+
+### 8. Daily Signal Digest
+
+A morning briefing across all sources.
+
+**Prompt:**
+> "Run my daily signal digest:
+> 1. Insider trading clusters from the last 24 hours (edgar-signals)
+> 2. Earnings movers — any stock that moved 5%+ on earnings (earnings-intel)
+> 3. AI lab activity from the last 24 hours (ai-labs)
+> 4. New congressional trades (govcon)
+> 5. Companies that posted 10+ new roles yesterday (hiring-signals)
+> 6. Any earnings calls today with high signal scores (live-calls)
+> Format as a briefing I can scan in 2 minutes."
 
 ---
 
