@@ -44,43 +44,63 @@ In Salesforce Setup:
 ### 3. Set Environment Variables
 
 ```bash
+# Mac / Linux
 export SF_USERNAME="you@company.com"
 export SF_PASSWORD="yourpassword"
 export SF_SECURITY_TOKEN="your_security_token"
+export ANTHROPIC_API_KEY="sk-ant-..."    # Required for the chat web app
+
+# Windows PowerShell
+$env:SF_USERNAME = "you@company.com"
+$env:SF_PASSWORD = "yourpassword"
+$env:SF_SECURITY_TOKEN = "your_security_token"
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
 ```
 
-Or for sandbox orgs:
+Or for sandbox orgs, also set:
 ```bash
 export SF_DOMAIN="test"
-```
-
-Or use a pre-existing access token:
-```bash
-export SF_ACCESS_TOKEN="00D..."
-export SF_INSTANCE_URL="https://yourorg.my.salesforce.com"
 ```
 
 ### 4. Install & Run
 
 ```bash
-pip install simple-salesforce mcp starlette uvicorn
+pip install simple-salesforce anthropic mcp starlette uvicorn
 
-# From the mcp-servers-public directory:
+git clone https://github.com/andrewcmcguire/mcp-servers.git
+cd mcp-servers
+
 python -m salesforce-360.server
 ```
 
-Server starts on `http://localhost:8107`.
+You'll see:
+```
+Starting salesforce-360 on port 8107
+Chat UI: http://localhost:8107
+MCP endpoint: http://localhost:8107/mcp
+```
 
-### 5. Connect Your AI Client
+### 5. Use It
 
-**Claude Code:**
+**Option A: Chat Web App (recommended for salespeople)**
+
+Open [http://localhost:8107](http://localhost:8107) in your browser. You get a chat interface — just type your questions. No setup beyond what you already did.
+
+Quick action buttons are built in:
+- **Today's briefing** — tasks, meetings, deals closing, pipeline changes
+- **Pipeline** — your pipeline by stage
+- **At-risk deals** — deals that need attention
+- **Forecast** — weighted/unweighted forecast by month
+- **Deal changes** — what moved this week
+
+**Option B: Claude Code**
 ```bash
 claude mcp add salesforce-360 -s user \
   --transport http \
   --url "http://localhost:8107/mcp"
 ```
 
-**Claude Desktop** — add to `claude_desktop_config.json`:
+**Option C: Claude Desktop** — add to `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
@@ -91,18 +111,9 @@ claude mcp add salesforce-360 -s user \
 }
 ```
 
-**Cursor** — add to `.cursor/mcp.json`:
-```json
-{
-  "mcpServers": {
-    "salesforce-360": {
-      "url": "http://localhost:8107/mcp"
-    }
-  }
-}
-```
+**Option D: Cursor** — add to `.cursor/mcp.json` (same format as Claude Desktop).
 
-No API key needed — it runs locally with your Salesforce credentials.
+No gateway API key needed — it runs locally with your Salesforce credentials. The chat web app uses your Anthropic API key to power the conversation.
 
 ---
 
