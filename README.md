@@ -20,6 +20,14 @@ Connect Claude Code, Claude Desktop, Cursor, or any MCP-compatible agent. First 
 
 38 tools. 60K+ data points. Streamable HTTP transport.
 
+### Salesforce 360 (self-hosted)
+
+| Server | Tools | Description |
+|--------|-------|-------------|
+| **salesforce-360** | 10 | Headless Salesforce intelligence — today briefing, account 360, pipeline, at-risk deals, forecast |
+
+Runs locally with your own Salesforce credentials. Not behind the gateway — connects directly to your org. [Full setup guide →](salesforce-360/README.md)
+
 ---
 
 ## Quick Start
@@ -494,6 +502,35 @@ A morning briefing across all sources.
 | `search_call_content` | Full-text search across transcripts and NLP insights |
 | `get_call_monitor_status` | Status of live call monitoring — active transcriptions, chunk progress |
 | `get_call_directory` | Master directory: 26K+ calls, 5,192 tickers, linked transcripts and insights |
+
+### salesforce-360 (self-hosted)
+
+| Tool | Description |
+|------|-------------|
+| `today_briefing` | Tasks due, meetings today, deals closing this week, new cases, pipeline changes |
+| `account_360` | Full account view: contacts, opps, cases, activities, meetings — one command |
+| `my_accounts` | Your entire book of business sorted by revenue, filterable by industry |
+| `pipeline_snapshot` | Pipeline by stage with totals — see where every deal sits |
+| `deal_changes` | What moved this week: stage changes, amount changes, close date pushes |
+| `at_risk_deals` | Deals past close date, stale 14+ days, or pushed multiple times |
+| `search_accounts` | Find any account across the org by name, industry, or keyword |
+| `account_contacts` | All contacts at an account with titles, emails, and opportunity roles |
+| `activity_timeline` | Recent calls, emails, tasks, meetings for your accounts |
+| `forecast_summary` | 6-month pipeline forecast with weighted and unweighted totals by month |
+
+**Setup:**
+```bash
+# Set your Salesforce credentials
+export SF_USERNAME="you@company.com"
+export SF_PASSWORD="yourpassword"
+export SF_SECURITY_TOKEN="your_token"
+
+# Run the server
+python -m salesforce-360.server
+
+# Connect Claude Code
+claude mcp add salesforce-360 -s user --transport http --url "http://localhost:8107/mcp"
+```
 
 ---
 
